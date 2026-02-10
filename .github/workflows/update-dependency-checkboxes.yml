@@ -1,0 +1,76 @@
+name: Update Dependency Checkboxes
+
+on:
+  issues:
+    types: [closed]
+
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    
+    steps:
+      - name: Update dependent issue checkboxes
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const closedIssue = context.payload.issue;
+            console.log(`🔍 Closed issue: #${closedIssue.number}`);
+            
+            // Find all open issues
+            const allIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+            
+            for (const issue of allIssues.data) {
+              if (issue.pull_request) continue;
+              
+              const body = issue.body || '';
+              const pattern = new RegExp(`- \\[ \\] #${closedIssue.number}(\\s|$)`, 'g');
+              
+              if (pattern.test(body)) {
+                console.log(`✅ Found dependency in #${issue.number}`);
+                
+                // Update checkbox
+                const newBody = body.replace(
+                  pattern,
+                  `- [x] #${closedIssue.number}$1`
+                );
+                
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: newBody
+                });
+                
+                // Check if all dependencies are now resolved
+                const uncheckedDeps = newBody.match(/- \[ \] #\d+/g);
+                
+                if (!uncheckedDeps || uncheckedDeps.length === 0) {
+                  // All dependencies resolved
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    body: '🎉 All dependencies resolved! This issue is now ready to be worked on.'
+                  });
+                  
+                  // Add kimi-ready label
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    labels: ['kimi-ready']
+                  });
+                }
+              }
+            }
+            
+            console.log('✅ Dependency update complete');

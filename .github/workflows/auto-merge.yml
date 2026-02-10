@@ -1,0 +1,124 @@
+name: Auto-merge PRs
+
+on:
+  check_suite:
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Auto-merge if approved and checks pass
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Only run for Kimi branches
+            if (!context.payload.pull_request && context.payload.check_suite) {
+              const checkSuite = context.payload.check_suite;
+              const prs = checkSuite.pull_requests || [];
+              
+              if (prs.length === 0) return;
+              
+              for (const pr of prs) {
+                if (!pr.head.ref.startsWith('kimi/')) continue;
+                
+                const { data: pullRequest } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number
+                });
+                
+                // Check if all checks passed
+                if (checkSuite.conclusion !== 'success') {
+                  console.log(`⏭️  PR #${pr.number}: Checks not passing`);
+                  continue;
+                }
+                
+                // Check if approved
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number
+                });
+                
+                const hasApproval = reviews.some(r => r.state === 'APPROVED');
+                
+                if (!hasApproval) {
+                  console.log(`⏭️  PR #${pr.number}: No approvals yet`);
+                  continue;
+                }
+                
+                // Merge
+                try {
+                  await github.rest.pulls.merge({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: pr.number,
+                    merge_method: 'squash'
+                  });
+                  
+                  console.log(`✅ Auto-merged PR #${pr.number}`);
+                  
+                  // Delete branch
+                  await github.rest.git.deleteRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: `heads/${pullRequest.head.ref}`
+                  });
+                } catch (error) {
+                  console.error(`❌ Failed to merge PR #${pr.number}:`, error.message);
+                }
+              }
+            }
+            
+            // Handle review submission
+            if (context.payload.pull_request && context.payload.review) {
+              const pr = context.payload.pull_request;
+              
+              if (!pr.head.ref.startsWith('kimi/')) return;
+              if (context.payload.review.state !== 'approved') return;
+              
+              // Check if all checks passed
+              const { data: checkRuns } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha
+              });
+              
+              const allPassed = checkRuns.check_runs.every(run => 
+                run.status === 'completed' && run.conclusion === 'success'
+              );
+              
+              if (!allPassed) {
+                console.log('⏭️  Checks not yet passing');
+                return;
+              }
+              
+              // Merge
+              try {
+                await github.rest.pulls.merge({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  merge_method: 'squash'
+                });
+                
+                console.log(`✅ Auto-merged PR #${pr.number}`);
+                
+                // Delete branch
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `heads/${pr.head.ref}`
+                });
+              } catch (error) {
+                console.error(`❌ Failed to merge:`, error.message);
+              }
+            }

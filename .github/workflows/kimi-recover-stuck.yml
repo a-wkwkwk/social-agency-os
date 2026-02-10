@@ -1,0 +1,81 @@
+name: Recover Stuck Issues
+
+on:
+  schedule:
+    # Run every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  recover-stuck:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    
+    steps:
+      - name: Find and recover stuck issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log('🔍 Looking for stuck issues...');
+            
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'kimi-working',
+              per_page: 100
+            });
+            
+            console.log(`Found ${issues.data.length} issues with 'kimi-working' label`);
+            
+            const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+            
+            for (const issue of issues.data) {
+              if (issue.pull_request) continue;
+              
+              const updatedAt = new Date(issue.updated_at);
+              
+              if (updatedAt < twoHoursAgo) {
+                console.log(`🔧 Recovering stuck issue #${issue.number}`);
+                
+                // Remove stuck labels
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: 'kimi-working'
+                  });
+                } catch (e) {}
+                
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: 'in-progress'
+                  });
+                } catch (e) {}
+                
+                // Add recovery labels
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['kimi-recovered', 'needs-human-review']
+                });
+                
+                // Post recovery comment
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `⚠️ **Issue Recovery**\n\nThis issue has been stuck in 'kimi-working' state for over 2 hours.\n\n**Actions Taken:**\n- Removed 'kimi-working' and 'in-progress' labels\n- Added 'kimi-recovered' and 'needs-human-review' labels\n\n**Next Steps:**\n1. Review the issue requirements\n2. Check if there are any blockers\n3. Manually add 'kimi-ready' label when ready to retry\n4. Consider breaking into smaller tasks if too complex`
+                });
+              }
+            }
+            
+            console.log('✅ Recovery complete');

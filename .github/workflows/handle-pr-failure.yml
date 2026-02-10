@@ -1,0 +1,98 @@
+name: Handle PR Failures
+
+on:
+  workflow_run:
+    workflows: ["*"]
+    types: [completed]
+
+jobs:
+  handle-failure:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+    
+    steps:
+      - name: Handle test failures
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowRun = context.payload.workflow_run;
+            
+            // Only handle Kimi branches
+            if (!workflowRun.head_branch.startsWith('kimi/')) {
+              console.log('⏭️  Not a Kimi branch');
+              return;
+            }
+            
+            console.log(`❌ Workflow failed on branch: ${workflowRun.head_branch}`);
+            
+            // Find associated PR
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${workflowRun.head_branch}`,
+              state: 'open'
+            });
+            
+            if (prs.length === 0) {
+              console.log('No open PR found for this branch');
+              return;
+            }
+            
+            const pr = prs[0];
+            
+            // Check retry count
+            const labels = pr.labels.map(l => l.name);
+            const retryCount = labels.filter(l => l.startsWith('retry-')).length;
+            
+            if (retryCount >= 3) {
+              console.log(`⛔ Max retries (3) reached for PR #${pr.number}`);
+              
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: ['kimi-failed', 'needs-human-review']
+              });
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `❌ **Maximum retry attempts reached**\n\nThis PR has failed CI checks 3 times. Manual intervention required.\n\nPlease review the error logs and fix the issues manually.`
+              });
+              
+              return;
+            }
+            
+            // Add retry label
+            const nextRetry = retryCount + 1;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: [`retry-${nextRetry}`]
+            });
+            
+            // Get error logs
+            const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: workflowRun.id
+            });
+            
+            const failedJobs = jobs.jobs.filter(j => j.conclusion === 'failure');
+            const errorSummary = failedJobs.map(j => `- ${j.name}: ${j.conclusion}`).join('\n');
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: `⚠️ **CI Failure - Retry ${nextRetry}/3**\n\n${errorSummary}\n\n🤖 Kimi agent will attempt to fix these issues automatically.`
+            });
+            
+            console.log(`🔄 Retry ${nextRetry} scheduled for PR #${pr.number}`);
