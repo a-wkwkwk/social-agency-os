@@ -1,0 +1,26 @@
+name: Kimi Comment Trigger
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  check-mention:
+    # Only run if comment contains @kimi and user has write access
+    if: |
+      contains(github.event.comment.body, '@kimi') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    
+    uses: ABDigitalServices/.github/.github/workflows/kimi-comment-handler.yml@main
+    with:
+      comment_body: ${{ github.event.comment.body }}
+      issue_number: ${{ github.event.issue.number }}
+      repository: ${{ github.repository }}
+      comment_author: ${{ github.event.comment.user.login }}
+      is_pull_request: ${{ github.event.issue.pull_request != null }}
+    secrets:
+      KIMI_RELAY_TOKEN: ${{ secrets.KIMI_RELAY_TOKEN }}
+      KIMI_RELAY_URL: ${{ secrets.KIMI_RELAY_URL }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
